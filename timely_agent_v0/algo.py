@@ -101,6 +101,7 @@ class qvalue(nn.Module):
         self.params_pp = torch.Tensor(dim, dim, 2).normal_()
         self.params_p2.requires_grad_()
         self.params_pp.requires_grad_()
+    
     def forward(self, G, traceSet, v, featureDict):
         sum_feature = 0
         sum_feature_num = 0
@@ -227,11 +228,11 @@ def generateFeasiblePair(G, n, baseline=False):
             result.append((source, dest, DDL))
     return result
 
-# def run(G, M, f, f_fixed, q, q_fixed, DDL, epsilon = 0.2, guide_prob = 0.1, time_window = 4, gamma = 0.8, fixed_sd=False, source=None, dest=None, guidance=False, SINGLE=False):
+def run(G, M, f, f_fixed, q, q_fixed, DDL, epsilon = 0.2, guide_prob = 0.1, time_window = 4, gamma = 0.8, fixed_sd=False, source=None, dest=None, guidance=False, SINGLE=False):
 # =======
 #         return rd
 
-def run(G, M, f, f_fixed, q, q_fixed, DDL, e_greedy = 1, epsilon = 0.2, time_window = 4, gamma = 0.8, fixed_sd=False, source=None, dest=None, guidance=None, SINGLE=False):
+#def run(G, M, f, f_fixed, q, q_fixed, DDL, e_greedy = 1, epsilon = 0.2, time_window = 4, gamma = 0.8, fixed_sd=False, source=None, dest=None, guidance=None, SINGLE=False):
 # >>>>>>> patch-1
     if fixed_sd: # Run the algo for the given s-d pair
         try:

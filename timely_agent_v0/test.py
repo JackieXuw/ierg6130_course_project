@@ -20,7 +20,7 @@ from algo import feature, qvalue, cal_feature, run, baseline, isterminate, rewar
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--lr', help='learning rate for Adam optimizer', type=float, default=1e-3)
-    parser.add_argument('-v', '--version', help='version of this running code', type=str, default=time.strftime("%m-%d;%H:%M:%S", time.localtime()))
+    parser.add_argument('-v', '--version', help='version of this running code', type=str, default=time.strftime("%m-%d-%H-%M-%S", time.localtime()))
     parser.add_argument('-s', help='fixed source if assigned', type=int, default=0)
     parser.add_argument('-d', help='fixed dest if assigned', type=int, default=0)
     parser.add_argument('-f', '--feature', help='feature dimension', type=int, default=16)
@@ -119,7 +119,7 @@ if __name__ == "__main__":
             torch.save({
                           'iteration': iteration,
                           'state_dict': [f.params_p, f.params_p2, f.params_pp, q.params_p2, q.params_pp], 
-            }, '{}/t_{}_v_{}_rd,bsl_{},{}_iter_{}_'.format(ROOT, time.strftime("%m-%d;%H:%M:%S", time.localtime()), args.version, avg_rd, avg_rd_bsl, iteration) + '.t7')
+            }, '{}/t_{}_v_{}_rd,bsl_{},{}_iter_{}_'.format(ROOT, time.strftime("%m-%d-%H-%M-%S", time.localtime()), args.version, avg_rd, avg_rd_bsl, iteration) + '.t7')
             logging.info('Model saved at iter {}'.format(iteration))
             
         if not iteration % 100: # Update the fixed network
