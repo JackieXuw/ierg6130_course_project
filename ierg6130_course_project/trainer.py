@@ -8,45 +8,12 @@ import torch
 import torch.nn as nn
 import inspect 
 import time
+from replay_memory import *
+from delay_constrained_network_env import *
+from q_value import QValue
 from utils import *
 
-
-def run(trainer_cls, config=None, reward_threshold=None):
-    """Run the trainer and report progress, agnostic to the class of trainer
-    :param trainer_cls: A trainer class 
-    :param config: A dict
-    :param reward_threshold: the reward threshold to break the training
-    :return: The trained trainer and a dataframe containing learning progress
-    """
-    assert inspect.isclass(trainer_cls)
-    if config is None:
-        config = {}
-    trainer = trainer_cls(config)
-    config = trainer.config
-    start = now = time.time()
-    stats = []
-    for i in range(config['max_iteration'] + 1):
-        stat = trainer.train()
-        stats.append(stat or {})
-        if i % config['evaluate_interval'] == 0 or \
-                i == config["max_iteration"]:
-            reward = trainer.evaluate(config.get("evaluate_num_episodes", 50))
-            print("({:.1f}s,+{:.1f}s)\tIteration {}, current mean episode "
-                  "reward is {}. {}".format(
-                time.time() - start, time.time() - now, i, reward,
-                {k: round(np.mean(v), 4) for k, v in
-                 stat.items()} if stat else ""))
-            now = time.time()
-        if reward_threshold is not None and reward > reward_threshold:
-            print("In {} iteration, current mean episode reward {:.3f} is "
-                  "greater than reward threshold {}. Congratulation! Now we "
-                  "exit the training process.".format(
-                i, reward, reward_threshold))
-            break
-    return trainer, stats
-
 default_config = dict(
-    env_name="DelayConstrainedNetworkRoutingEnv",
     max_iteration=1000,
     max_episode_length=1000,
     evaluate_interval=100,
@@ -55,20 +22,17 @@ default_config = dict(
     seed=0
 )
 
-
 class AbstractTrainer:
     """This is the abstract class for value-based RL trainer. We will inherent
     the specify algorithm's trainer from this abstract class, so that we can
     reuse the codes.
     """
 
-    def __init__(self, config, env_class):
+    def __init__(self, config):
         self.config = merge_config(config, default_config)
-
+        env_class = config['env_class'] 
         # Create the environment
         self.env_name = self.config['env_name']
-        G = config['graph'] 
-        self.env = env_class(G)
         
         # Apply the random seed
         self.seed = self.config["seed"]
@@ -152,157 +116,203 @@ class AbstractTrainer:
                                   "Trainer.train() function.")
 
 # Build the algorithm-specify config.
-mlp_trainer_config = merge_config(dict(
-    parameter_std=0.01,
-    learning_rate=0.01,
-    hidden_dim=100,
-    n=3,
-    clip_norm=1.0,
-    clip_gradient=True
+struct2vec_config = merge_config(dict(
+    memory_size=50000,
+    learn_start=5000,
+    batch_size=32,
+    feature_dim=7,
+    target_update_freq=500,  # in steps
+    learn_freq=1,  # in steps
+    n=1,
+    env_class=DelayConstrainedNetworkRoutingEnv,
+    env_name="DelayConstrainedNetworkRoutingEnv"
 ), default_config)
 
 
-class MLPTrainer(LinearTrainer):
+def to_tensor(x):
+    """A helper function to transform a numpy array to a Pytorch Tensor"""
+    if isinstance(x, np.ndarray):
+        x = torch.from_numpy(x).type(torch.float32)
+    assert isinstance(x, torch.Tensor)
+    if x.dim() == 3 or x.dim() == 1:
+        x = x.unsqueeze(0)
+    assert x.dim() == 2 or x.dim() == 4, x.shape
+    return x
+
+
+class Struct2VecTrainer(AbstractTrainer):
     def __init__(self, config):
-        config = merge_config(config, mlp_trainer_config)
-        self.hidden_dim = config["hidden_dim"]
+        config = merge_config(config, struct2vec_config)
+        assert 'graph' in config.keys()
+        self.learning_rate = config["learning_rate"]
+        self.feature_dim = config['feature_dim']
+        G = config['graph']
+        env_class = config['env_class'] 
+        self.env = env_class(G)
+        self.G = G 
         super().__init__(config)
 
+        self.memory = ReplayMemory(config["memory_size"])
+        self.learn_start = config["learn_start"]
+        self.batch_size = config["batch_size"]
+        self.target_update_freq = config["target_update_freq"]
+        self.clip_norm = config["clip_norm"]
+        self.step_since_update = 0
+        self.total_step = 0
+
     def initialize_parameters(self):
-        # [TODO] Initialize self.hidden_parameters and self.output_parameters,
-        #  which are two dimensional matrices, and subject to normal
-        #  distributions with scale config["parameter_std"]
-        std = self.config["parameter_std"]
-        self.hidden_parameters = std * np.random.randn(self.obs_dim, self.hidden_dim) #None
-        self.output_parameters = std * np.random.randn(self.hidden_dim, self.act_dim) #None
+        """Initialize the pytorch model as the Q value approximator and the target Q-value approximator."""
+        # initialize the Q-value approximator using QValue class  
+        self.q_value_approximator = QValue(self.feature_dim) 
+
+        self.q_value_approximator.eval()
+        self.q_value_approximator.share_memory()
+
+        # [TODO] Initialize target network, which is identical to self.network,
+        # and should have the same weights with self.network. So you should
+        # put the weights of self.network into self.target_network.
+        self.target_network = PytorchModel(self.obs_dim, self.act_dim) #None
+        self.target_network.load_state_dict(self.network.state_dict())
+        #pass
+
+        self.target_network.eval()
+
+        # Build Adam optimizer and MSE Loss.
+        # [TODO] Uncomment next few lines
+        self.optimizer = torch.optim.Adam(
+            self.network.parameters(), lr=self.learning_rate
+        )
+        self.loss = nn.MSELoss()
         #pass
 
     def compute_values(self, processed_state):
         """Compute the value for each potential action. Note that you
         should NOT preprocess the state here."""
-        assert processed_state.ndim == 1, processed_state.shape
-        activation = self.compute_activation(processed_state)
-        values = np.matmul(self.output_parameters.transpose(), activation)#None
-        #pass
+        # [TODO] Convert the output of neural network to numpy array
+        values = self.target_network(processed_state).detach().numpy()
         return values 
-
-    def compute_activation(self, processed_state):
-        """Given a processed state, first we need to compute the activtaion
-        (the output of hidden layer). Then we compute the values (the output of
-        the output layer).
-        """
-        pre_activation = np.matmul(self.hidden_parameters.transpose(), processed_state)
-        activation_function = lambda x: np.tanh(x)
-        activation = activation_function(pre_activation) #None
-        return activation
         #pass
 
-    def compute_gradient(self, processed_states, actions, rewards, tau, T):
-        n = self.n
-        
-        # [TODO] compute the target value.
-        # Hint: copy your codes in LinearTrainer.
-        G = 0 #None
-        #pass
-        for i in range(min(n,T-tau)):
-            try:
-                G += (self.gamma**i)*rewards[tau+1+i]
-            except Exception as e:
-                print('Error in accessing reward! {}'.format(e))
-                break 
-        
-        #pass
+    def train(self):
+        s = self.env.reset()
+        processed_s = self.process_state(s)
+        act = self.compute_action(processed_s)
+        stat = {"loss": []}
 
-        if tau + n < T:
-            # Hint: Since we use Sarsa algorithm here,
-            #  the Q value of time tau+n is the Q value of action
-            #  in time tau+n. So you should take the tau+n element of
-            #  processed_states as input to compute the Q values
-            #  and then take the "actions[tau+n]" as the index to get
-            #  the Q value in tau+n.
-            processed_state_step_n = processed_states[tau+n]
-            action_step_n = actions[tau+n]
-            Q_tau_plus_n = self.compute_values(processed_state_step_n)[action_step_n] #None
+        for t in range(self.max_episode_length):
+            next_state, reward, done, _ = self.env.step(act)
+            next_processed_s = self.process_state(next_state)
+
+            # Push the transition into memory.
+            self.memory.push(
+                (processed_s, act, reward, next_processed_s, done)
+            )
+
+            processed_s = next_processed_s
+            act = self.compute_action(next_processed_s)
+            self.step_since_update += 1
+            self.total_step += 1
+
+            if done:
+                break
+                
+            if t % self.config["learn_freq"] != 0:
+                # It's not necessary to update in each step.
+                continue
+
+            if len(self.memory) < self.learn_start:
+                continue
+            elif len(self.memory) == self.learn_start:
+                print("Current memory contains {} transitions, "
+                      "start learning!".format(self.learn_start))
+
+            batch = self.memory.sample(self.batch_size)
+
+            # Transform a batch of state / action / .. into a tensor.
+            state_batch = to_tensor(
+                np.stack([transition[0] for transition in batch])
+            )
+            action_batch = to_tensor(
+                np.stack([transition[1] for transition in batch])
+            )
+            reward_batch = to_tensor(
+                np.stack([transition[2] for transition in batch])
+            )
+            next_state_batch = torch.stack(
+                [transition[3] for transition in batch]
+            )
+            done_batch = to_tensor(
+                np.stack([transition[4] for transition in batch])
+            )
+
+            with torch.no_grad():
+                # [TODO] Compute the values of Q in next state in batch.
+                # Hint: 
+                #  1. Q_t_plus_one is the maximum value of Q values of possible
+                #     actions in next state. So the input to the network is 
+                #     next_state_batch.
+                #  2. Q_t_plus_one is computed using the target network.
+                Qs_t_plus_one = self.target_network(next_state_batch)
+                Q_t_plus_one = torch.max(Qs_t_plus_one, axis=-1).values #None
+                #pass
+                
+                assert isinstance(Q_t_plus_one, torch.Tensor)
+                assert Q_t_plus_one.dim() == 1
+                
+                # [TODO] Compute the target value of Q in batch.
+                # Hint: The Q target is simply r_t + gamma * Q_t+1 
+                #  IF the episode is not done at time t.
+                #  That is, the (gamma*Q_t+1) term should be masked out
+                #  if done_batch[t] is True.
+                #  A smart way to do so is: using (1-done_batch) as multiplier
+                Q_target = reward_batch + (1-done_batch) * self.gamma * Q_t_plus_one #None
+                Q_target = Q_target.squeeze()
+                #pass
+                assert Q_target.shape == (self.batch_size,)
+            
+            # [TODO] Collect the Q values in batch.
+            # Hint: Remember to call self.network.train()
+            #  before you get the Q value from self.network(state_batch),
+            #  otherwise the graident will not be recorded by pytorch.
+            self.network.train()
+            Qs_t = self.network(state_batch)  #None
+            Q_t = torch.autograd.Variable(torch.ones(self.batch_size), requires_grad=False)
+            for i in range(self.batch_size):
+                action = int(action_batch[0, i])
+                Q_t[i] = Qs_t[i, action]
+            #pass
+    
+            assert Q_t.shape == Q_target.shape
+
+            # Update the network
+            self.optimizer.zero_grad()
+            loss = self.loss(input=Q_t, target=Q_target)
+            loss_value = loss.item()
+            stat['loss'].append(loss_value)
+            loss.backward()
+            
+            # [TODO] Gradient clipping. Uncomment next line
+            nn.utils.clip_grad_norm_(self.network.parameters(), self.clip_norm)
             #pass
             
-            G = G + (self.gamma ** n) * Q_tau_plus_n
+            self.optimizer.step()
+            self.network.eval()
 
-        # Denote the state-action value function Q, then the loss of
-        # prediction error w.r.t. the output layer weights can be 
-        # separated into two parts (the chain rule):
-        #     dError / dweight = (dError / dQ) * (dQ / dweight)
-        # We call the first one loss_grad, and the latter one
-        # value_grad. We consider the Mean Square Error between the target
-        # value (G) and the predict value (Q(s_t, a_t)) to be the loss.
-        cur_state = processed_states[tau]
-        loss_grad = np.zeros((self.act_dim, 1))  # [act_dim, 1]
-        # [TODO] compute loss_grad
-        cur_action =  actions[tau]
-        cur_value_approximation = self.compute_values(cur_state)[cur_action]
-        loss_grad[cur_action] = -(G-cur_value_approximation)
-        #pass
-        
-        # [TODO] compute the gradient of output layer parameters
-        hidden_layer_output = self.compute_activation(cur_state)
-        output_gradient = np.zeros((self.hidden_dim, self.act_dim)) #None
-        output_gradient[:, cur_action] = loss_grad[cur_action] * hidden_layer_output 
-        
-        #pass
-        
-        # [TODO] compute the gradient of hidden layer parameters
-        # Hint: using chain rule and derive the formulation
-        activation_gradient_function = lambda x : -np.tanh(x)**2 + 1
-        hidden_layer_output_gradient = loss_grad[cur_action] * self.output_parameters[:, cur_action]
+        if len(self.memory) >= self.learn_start and \
+                self.step_since_update > self.target_update_freq:
+            print("{} steps has passed since last update. Now update the"
+                  " parameter of the behavior policy. Current step: {}".format(
+                self.step_since_update, self.total_step
+            ))
+            self.step_since_update = 0
+            # [TODO] Copy the weights of self.network to self.target_network.
+            self.target_network.load_state_dict(self.network.state_dict())
 
-        pre_activation = np.matmul(self.hidden_parameters.transpose(), cur_state)
-        activation_gradient = activation_gradient_function(pre_activation)
-        hidden_layer_pre_activation_gradient = hidden_layer_output_gradient * activation_gradient
-        
-        hidden_gradient = np.matmul(np.expand_dims(cur_state,axis=1), np.expand_dims(hidden_layer_pre_activation_gradient,axis=0))  #None
-        #pass
-    
-        assert np.all(np.isfinite(output_gradient)), \
-            "Invalid value occurs in output_gradient! {}".format(
-                output_gradient)
-        assert np.all(np.isfinite(hidden_gradient)), \
-            "Invalid value occurs in hidden_gradient! {}".format(
-                hidden_gradient)
-        return [hidden_gradient, output_gradient]
-
-    def apply_gradient(self, gradients):
-        """Apply the gradientss to the two layers' parameters."""
-        assert len(gradients) == 2
-        hidden_gradient, output_gradient = gradients
-
-        assert output_gradient.shape == (self.hidden_dim, self.act_dim)
-        assert hidden_gradient.shape == (self.obs_dim, self.hidden_dim)
-        
-        # [TODO] Implement the clip gradient mechansim
-        # Hint: when the old gradient has norm less that clip_norm,
-        #  then nothing happens. Otherwise shrink the gradient to
-        #  make its norm equal to clip_norm.
-        if self.config["clip_gradient"]:
-            clip_norm = self.config["clip_norm"]
-            flattened_hidden_gradient = hidden_gradient.flatten()
-            flattened_output_gradient = output_gradient.flatten()
-            hidden_gradient_norm = np.linalg.norm(hidden_gradient)
-            output_gradient_norm = np.linalg.norm(output_gradient)
-            if hidden_gradient_norm > clip_norm:
-                hidden_gradient *= (clip_norm/hidden_gradient_norm)
-            if output_gradient_norm > clip_norm:
-                output_gradient *= (clip_norm/output_gradient_norm)
-            #gradient_norm = np.linalg.norm(flattened_gradients) 
-            #if clip_norm <  gradient_norm:
-            #    output_gradient *= (clip_norm/gradient_norm)
-            #    hidden_gradient *= (clip_norm/gradient_norm)
             #pass
+            
+            self.target_network.eval()
+            
+        return {"loss": np.mean(stat["loss"]), "episode_len": t}
 
-        # [TODO] update the parameters
-        # Hint: Remember to check the sign when applying the gradient
-        #  into the parameters. Should you add or minus the gradients?
-        self.output_parameters = self.output_parameters - self.learning_rate * output_gradient
-        self.hidden_parameters = self.hidden_parameters - self.learning_rate * hidden_gradient
-        
-        # import ipdb; ipdb.set_trace()
-
-        #pass
+    def process_state(self, state):
+        return torch.from_numpy(state).type(torch.float32)
