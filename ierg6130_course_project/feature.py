@@ -30,33 +30,34 @@ class GraphFeature(nn.Module):
         self.dim = dim
         self.graph = graph
         self.iteration_radius = iteration_radius
-        self.params_p = torch.Tensor(dim,6).normal_()
+        self.params_p = torch.Tensor(dim, 6).normal_()
         self.params_p2 = torch.Tensor(dim, 2, 2).normal_()
         self.params_pp = torch.Tensor(dim, dim, 2).normal_()
         self.params_p.requires_grad_()
         self.params_p2.requires_grad_()
         self.params_pp.requires_grad_()
     
+      
     def get_fastest_time(self, node, dest):
         G = self.graph 
         has_path_from_node_to_dest = nx.has_path(G, node, dest)
         if has_path_from_node_to_dest:
-            fastest_time = nx.shortest_path(G, node, dest, weight='time')
+            fastest_time = nx.shortest_path_length(G, node, dest, weight='time')
         else:
             fastest_time = self.miss_deadline_penalty
         return fastest_time
     
-    def get_outgoing_min_time_cost_feature(self, node):
+    def add_incident_edge_feature(self, node, feature):
         G = self.graph 
         
-        adj_cost_feature = 0
-        adj_time_feature = 0
-        adj_min_cost_edge = {'cost':1e4,
-                             'time':0
+        adj_cost_feature = torch.zeros(self.dim)
+        adj_time_feature = torch.zeros(self.dim)
+        adj_min_cost_edge = {'cost': 1e4,
+                             'time': 0
                              }
-        adj_min_time_edge = {'cost':0, 
-                             'time':1e4
-                            }
+        adj_min_time_edge = {'cost': 0, 
+                             'time': 1e4
+                             }
         
         for u, adj in G.out_edges(node):
             adj_cost_feature += F.relu(self.params_p[:, 2] * G[node][adj]['cost'])
@@ -68,79 +69,75 @@ class GraphFeature(nn.Module):
             if G[node][adj]['time'] < adj_min_time_edge['time']:
                 adj_min_time_edge['cost'] = G[node][adj]['cost']
                 adj_min_time_edge['time'] = G[node][adj]['time']
+
+        num_out_edges = len(list(G.out_edges(node)))
+        if num_out_edges != 0:
+            adj_cost_feature /= num_out_edges 
+            adj_time_feature /= num_out_edges 
         
         adj_min_cost_edge_cost_time = [adj_min_cost_edge['cost'], adj_min_cost_edge['time']]
         adj_min_time_edge_cost_time = [adj_min_time_edge['cost'], adj_min_time_edge['time']] 
+                
+        feature += torch.matmul(self.params_pp[:, :, 0],  adj_cost_feature.unsqueeze(1))
+        feature += torch.matmul(self.params_pp[:, :, 1],  adj_time_feature.unsqueeze(1))
+        feature += torch.matmul(self.params_p2[:,:,0], torch.tensor(adj_min_cost_edge_cost_time).unsqueeze(1))
+        feature += torch.matmul(self.params_p2[:,:,1], torch.tensor(adj_min_time_edge_cost_time).unsqueeze(1))
         
-        return adj_min_cost_edge_cost_time, adj_min_time_edge_cost_time
+        return feature 
 
+        
     def forward(self, state):
-        node, remaining_time, dest  = state
+        node, dest, remaining_time = state
         radius = self.iteration_radius 
         G = self.graph 
 
         # collect the nodes that are within radius-hops of node 
         features_different_slot_list = []
         current_states = {state}
+        states_to_new_states = dict()
         for current_t in range(radius):
             current_states_feature_dict = dict()
             for current_state in current_states:
-                current_nodes_feature_dict[current_state] = None
+                current_states_feature_dict[current_state] = None
             features_different_slot_list.append(current_states_feature_dict)
-            outgoing_states = {}
+            outgoing_states = set()
             for current_state in current_states:
                 v, t_r, d = current_state
-                new_states = {(edge[1], t_r - G[edge[0]][edge[1]]['time'], d) for edge in G.out_edges(v)}
+                new_states = {(edge[1], d, t_r - G[edge[0]][edge[1]]['time']) \
+                    for edge in G.out_edges(v)}
+                states_to_new_states[current_state] = deepcopy(new_states) 
                 outgoing_states = outgoing_states.union(new_states)
 
             current_states = deepcopy(outgoing_states) 
         
         # then we start to iterate to get features
-        for current_t in range(radius):
-            t = radius - (current_t + 1)
-            if t == radius - 1:
-                # for the farthest loop feature
-                current_states = features_different_slot_list[t].keys() 
-                for current_state in current_states:
-                    u, t_r, d = current_state
-                    fastest_time = self.get_fastest_time(u, d) 
-                    feature = self.params_p[:, 4] * fastest_time
-                    feature += self.params_p[:, 5] * t_r 
-                     
-                    feature = feature.unsqueeze(1)
-                    
+        for t in reversed(range(radius)):
+            current_states = features_different_slot_list[t].keys() 
+            for current_state in current_states:
+                u, d, t_r = current_state
+                u = int(u)
+                d = int(d)
+                # add time feature
+                fastest_time = self.get_fastest_time(u, d) 
+                feature = self.params_p[:, 4] * fastest_time
+                feature += self.params_p[:, 5] * t_r 
+
+                feature = feature.unsqueeze(1)
+                # add average of adj features 
+                if t < radius - 1:
+                    adj_feature = torch.zeros(self.dim, 1)
+                    out_states = states_to_new_states[current_state]
+                    adj_feature_num = len(out_states)
+                    for state in out_states:
+                        adj_feature += features_different_slot_list[t+1][state]
+
+                    if adj_feature_num > 0:
+                        adj_feature /= adj_feature_num
+                    feature += (self.params_p[:, 1] * adj_feature.squeeze()).unsqueeze(1)
                 
-
-        
-
-             
-
-        adj_feature = torch.zeros(self.dim)
-        adj_feature_num = 0
-        adj_cost_feature = 0
-        adj_time_feature = 0
-                
-        # Take average by number of nodes
-        if len(list(G.adj)) != 0:
-            adj_cost_feature /= len(list(G.adj))
-            adj_time_feature /= len(list(G.adj))
-        if adj_feature_num != 0:
-            adj_feature /= adj_feature_num
-        feature = self.params_p[:, 0] * G.nodes[node]['visited']
-        
-        feature += self.params_p[:, 4] * shortest_path
-        feature += self.params_p[:, 5] * remaining_time
-        if len(list(G.adj[node])) == 0:
-            return feature
-        feature += self.params_p[:, 1] * adj_feature
-        feature = feature.unsqueeze(1)
-
-        
-        
-        feature += torch.matmul(self.params_pp[:, :, 0],  adj_cost_feature.unsqueeze(1))
-        feature += torch.matmul(self.params_pp[:, :, 1],  adj_time_feature.unsqueeze(1))
-        feature += torch.matmul(self.params_p2[:,:,0], torch.tensor(adj_min_cost_edge_cost_time).unsqueeze(1))
-        feature += torch.matmul(self.params_p2[:,:,1], torch.tensor(adj_min_time_edge_cost_time).unsqueeze(1))
-        
+                # add incident edge feature
+                feature = self.add_incident_edge_feature(u, feature)
+                 
+                features_different_slot_list[t][current_state] = feature
         assert feature.shape == (self.dim, 1)
         return feature.squeeze(1)

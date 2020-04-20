@@ -1,4 +1,6 @@
 import inspect
+import torch
+import numpy as np
 from collections import defaultdict
 import copy
 import time
@@ -8,6 +10,16 @@ import cv2
 from collections import deque
 import gym
 from gym import spaces
+
+def to_tensor(array, device='cpu'):
+    """Transform a numpy array to a pytorch tensor"""
+    if not isinstance(array, np.ndarray):
+        array = np.array(array) 
+    return torch.from_numpy(array).to(device)
+
+def to_array(tensor):
+    """Transform a pytorch tensor to a numpy array"""
+    return tensor.cpu().detach().numpy()
 
 def wait(sleep=0.2):
     time.sleep(sleep)

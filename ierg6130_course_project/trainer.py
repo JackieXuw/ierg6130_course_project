@@ -7,10 +7,11 @@ import torch
 import torch
 import torch.nn as nn
 import inspect 
+import random
 import time
 from replay_memory import *
 from delay_constrained_network_env import *
-from q_value import QValue
+from q_value import *
 from utils import *
 
 default_config = dict(
@@ -70,26 +71,8 @@ class AbstractTrainer:
         """Compute the action given the state. Note that the input
         is the processed state."""
 
-        values = self.compute_values(processed_state)
-        assert values.ndim == 1, values.shape
-
-        if eps is None:
-            eps = self.eps
-
-        # Implement the epsilon-greedy policy here. We have `eps`
-        #  probability to choose a uniformly random action in action_space,
-        #  otherwise choose action that maximizes the values.
-        # Hint: Use the function of self.env.action_space to sample random
-        # action.
-        action = None
-        coin = np.random.rand()
-        if coin < eps:
-            action = self.env.action_space.sample()
-        else:
-            action = np.argmax(values)
-        return action 
-        #pass
-        
+        raise NotImplementedError("You need to override the "
+                                  "Trainer.compute_action() function.")        
 
     def evaluate(self, num_episodes=50, *args, **kwargs):
         """Use the function you write to evaluate current policy.
@@ -125,7 +108,8 @@ struct2vec_config = merge_config(dict(
     learn_freq=1,  # in steps
     n=1,
     env_class=DelayConstrainedNetworkRoutingEnv,
-    env_name="DelayConstrainedNetworkRoutingEnv"
+    env_name="DelayConstrainedNetworkRoutingEnv",
+    q_value_class=GraphFeatureQValue
 ), default_config)
 
 
@@ -150,6 +134,7 @@ class Struct2VecTrainer(AbstractTrainer):
         env_class = config['env_class'] 
         self.env = env_class(G)
         self.G = G 
+        self.QValue = config['q_value_class']
         super().__init__(config)
 
         self.memory = ReplayMemory(config["memory_size"])
@@ -163,35 +148,76 @@ class Struct2VecTrainer(AbstractTrainer):
     def initialize_parameters(self):
         """Initialize the pytorch model as the Q value approximator and the target Q-value approximator."""
         # initialize the Q-value approximator using QValue class  
-        self.q_value_approximator = QValue(self.feature_dim) 
-
+        QValue = self.QValue 
+        self.q_value_approximator = QValue(self.G, struct2vec_config) 
         self.q_value_approximator.eval()
         self.q_value_approximator.share_memory()
 
-        # [TODO] Initialize target network, which is identical to self.network,
-        # and should have the same weights with self.network. So you should
-        # put the weights of self.network into self.target_network.
-        self.target_network = PytorchModel(self.obs_dim, self.act_dim) #None
-        self.target_network.load_state_dict(self.network.state_dict())
-        #pass
+        # Initialize target approximator, which is identical to self.q_value_approximator,
+        # and should have the same weights with self.q_value_approximator. So you should
+        # put the weights of self.q_value_approximator into self.target_q_value_approximator.
+        self.target_q_value_approximator = QValue(self.G, struct2vec_config)
+        self.target_q_value_approximator.load_state_dict(self.q_value_approximator.state_dict())
 
-        self.target_network.eval()
+        self.target_q_value_approximator.eval()
 
         # Build Adam optimizer and MSE Loss.
-        # [TODO] Uncomment next few lines
         self.optimizer = torch.optim.Adam(
-            self.network.parameters(), lr=self.learning_rate
+            self.q_value_approximator.parameters(), lr=self.learning_rate
         )
         self.loss = nn.MSELoss()
-        #pass
 
-    def compute_values(self, processed_state):
-        """Compute the value for each potential action. Note that you
-        should NOT preprocess the state here."""
-        # [TODO] Convert the output of neural network to numpy array
-        values = self.target_network(processed_state).detach().numpy()
-        return values 
-        #pass
+    def compute_q_value(self, processed_state, processed_action):
+        """Compute the q value for each state action pair. Note that you
+        should NOT preprocess the state and action here."""
+        values = self.target_q_value_approximator(
+            processed_state, processed_action).detach().numpy()
+
+        return values
+
+    def get_maximum_q_value(self, processed_state):
+        """
+        Get the maximum q_value on current process_state.
+        """
+        action_list, next_state_list = self.env.find_next_action_states(
+            processed_state
+        )
+        assert action_list is not None 
+        if len(action_list) == 0:
+            return self.compute_q_value(processed_state, processed_state)
+        
+        q_value_list = [self.compute_q_value(processed_state, next_state)
+            for next_state in next_state_list
+        ]
+
+        max_q_value = torch.max(q_value_list)
+        
+        return max_q_value
+
+    def compute_action(self, processed_state, eps=None):
+        action_list, next_state_list = self.env.find_next_action_states(
+            processed_state
+        )
+        assert action_list is not None
+        if len(action_list) == 0:
+            return None
+        q_value_list = [self.compute_q_value(processed_state, next_state)
+                        for next_state in next_state_list]
+
+        if eps is None:
+            eps = self.eps
+
+        # Implement the epsilon-greedy policy here. We have `eps`
+        #  probability to choose a uniformly random action in action_space,
+        #  otherwise choose action that maximizes the values.
+        action = None
+        coin = np.random.rand()
+        if coin < eps:
+            action = random.sample(action_list, 1)[0] 
+        else:
+            action_id = np.argmax(q_value_list)
+            action = action_list[action_id]
+        return action
 
     def train(self):
         s = self.env.reset()
@@ -200,6 +226,8 @@ class Struct2VecTrainer(AbstractTrainer):
         stat = {"loss": []}
 
         for t in range(self.max_episode_length):
+            if act is None:
+                continue
             next_state, reward, done, _ = self.env.step(act)
             next_processed_s = self.process_state(next_state)
 
@@ -246,57 +274,53 @@ class Struct2VecTrainer(AbstractTrainer):
             )
 
             with torch.no_grad():
-                # [TODO] Compute the values of Q in next state in batch.
-                # Hint: 
+                # Compute the values of Q in next state in batch.
                 #  1. Q_t_plus_one is the maximum value of Q values of possible
                 #     actions in next state. So the input to the network is 
                 #     next_state_batch.
                 #  2. Q_t_plus_one is computed using the target network.
-                Qs_t_plus_one = self.target_network(next_state_batch)
-                Q_t_plus_one = torch.max(Qs_t_plus_one, axis=-1).values #None
-                #pass
-                
+                Q_t_plus_one = self.get_maximum_q_value(next_state_batch)
+                                
                 assert isinstance(Q_t_plus_one, torch.Tensor)
                 assert Q_t_plus_one.dim() == 1
                 
-                # [TODO] Compute the target value of Q in batch.
-                # Hint: The Q target is simply r_t + gamma * Q_t+1 
+                # Compute the target value of Q in batch.
+                # The Q target is simply r_t + gamma * Q_t+1 
                 #  IF the episode is not done at time t.
                 #  That is, the (gamma*Q_t+1) term should be masked out
                 #  if done_batch[t] is True.
                 #  A smart way to do so is: using (1-done_batch) as multiplier
-                Q_target = reward_batch + (1-done_batch) * self.gamma * Q_t_plus_one #None
+                Q_target = reward_batch + (1-done_batch) * self.gamma * Q_t_plus_one 
                 Q_target = Q_target.squeeze()
-                #pass
+                
                 assert Q_target.shape == (self.batch_size,)
             
-            # [TODO] Collect the Q values in batch.
-            # Hint: Remember to call self.network.train()
+            # Collect the Q values in batch.
             #  before you get the Q value from self.network(state_batch),
             #  otherwise the graident will not be recorded by pytorch.
-            self.network.train()
-            Qs_t = self.network(state_batch)  #None
+            self.q_value_approximator.train()
             Q_t = torch.autograd.Variable(torch.ones(self.batch_size), requires_grad=False)
             for i in range(self.batch_size):
-                action = int(action_batch[0, i])
-                Q_t[i] = Qs_t[i, action]
-            #pass
+                state = (state_batch[0, i])
+                next_state = (next_state_batch[0, i])
+                Q_t[i] = self.q_value_approximator(state, next_state) 
     
             assert Q_t.shape == Q_target.shape
 
-            # Update the network
+            # Update the q_value approximator
             self.optimizer.zero_grad()
             loss = self.loss(input=Q_t, target=Q_target)
             loss_value = loss.item()
             stat['loss'].append(loss_value)
             loss.backward()
             
-            # [TODO] Gradient clipping. Uncomment next line
-            nn.utils.clip_grad_norm_(self.network.parameters(), self.clip_norm)
-            #pass
+            # Gradient clipping
+            nn.utils.clip_grad_norm_(
+                self.q_value_approximator.parameters(), self.clip_norm
+                )
             
             self.optimizer.step()
-            self.network.eval()
+            self.q_value_approximator.eval()
 
         if len(self.memory) >= self.learn_start and \
                 self.step_since_update > self.target_update_freq:
@@ -305,14 +329,15 @@ class Struct2VecTrainer(AbstractTrainer):
                 self.step_since_update, self.total_step
             ))
             self.step_since_update = 0
-            # [TODO] Copy the weights of self.network to self.target_network.
-            self.target_network.load_state_dict(self.network.state_dict())
+            # Copy the weights of self.q_value_approximator
+            # to self.target_q_value_approximator.
+            self.target_q_value_approximator.load_state_dict(
+                self.q_value_approximator.state_dict()
+                )
 
-            #pass
-            
-            self.target_network.eval()
-            
+            self.target_q_value_approximator.eval()
+
         return {"loss": np.mean(stat["loss"]), "episode_len": t}
 
     def process_state(self, state):
-        return torch.from_numpy(state).type(torch.float32)
+        return state

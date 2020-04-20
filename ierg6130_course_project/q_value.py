@@ -5,15 +5,17 @@ import torch.nn as nn
 from feature import GraphFeature
 
 class GraphFeatureQValue(nn.Module):
-    def __init__(self, dim, graph):
+    def __init__(self, graph, config):
         super().__init__()
         assert isinstance(graph, nx.Graph)
+        dim = config['feature_dim']
+        iter_radius = config['iteration_radius']
         self.dim = dim
         self.params_p2 = torch.Tensor(2 * dim).normal_()
         self.params_pp = torch.Tensor(dim, dim, 2).normal_()
         self.params_p2.requires_grad_()
         self.params_pp.requires_grad_()
-        self.graph_feature = GraphFeature(dim, graph, iteration_radius) 
+        self.graph_feature = GraphFeature(config) 
 
     def forward(self, state, action):
         """

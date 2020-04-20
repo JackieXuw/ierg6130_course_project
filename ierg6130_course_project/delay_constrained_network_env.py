@@ -54,13 +54,32 @@ class DelayConstrainedNetworkRoutingEnv(Env):
         # Cumulative reward earned this episode
         self.episode_total_reward = None
 
-        # the action_space is state-dependent and thus we implement a get_action_space as a lambda function to get the list of next nodes
-        self.get_action_space = lambda node: DelayConstrainedNetworkActionSpace([ (node, next_node) for next_node \
-                                                in list(nx.bfs_successors(self.graph, node, depth_limit=1))[0][1]]) 
+        # the action_space is state-dependent and thus we implement a 
+        # get_action_space as a lambda function to get the list of next nodes
+        self.get_action_space = \
+            lambda node: DelayConstrainedNetworkActionSpace([(node, next_node) for next_node \
+                         in list(nx.bfs_successors(self.graph, node, depth_limit=1))[0][1]]) 
 
         self.observation_space = DelayConstrainedNetworkObservationSpace(self.graph)  
         self.seed()
         self.reset()
+
+    def find_next_action_states(self, state):
+        current_node, destination, remaining_time = state
+        
+        if current_node is None:
+            return None, None
+        actions_list = [(current_node, next_node) for next_node
+                        in list(nx.bfs_successors(self.graph, current_node,
+                                depth_limit=1))[0][1]]
+        next_states_list = []
+        for action in actions_list:
+            _, next_node = action
+            act_time = self.graph[current_node][next_node]['time']
+            next_state = (next_node, destination, remaining_time-act_time)
+            next_states_list.append(next_state)
+
+        return actions_list, next_states_list
 
     def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
