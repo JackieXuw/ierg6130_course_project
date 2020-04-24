@@ -1,6 +1,26 @@
 import numpy as np
+from collections import deque
+import random
 
 class ReplayMemory:
+    """Store and sample the transitions"""
+    def __init__(self, capacity):
+        # deque is a useful class which acts like a list but only contain
+        # finite elements.When appending new element make deque exceeds the 
+        # `maxlen`, the oldest element (the index 0 element) will be removed.
+        
+        self.memory = deque(maxlen=capacity)
+
+    def push(self, transition):
+        self.memory.append(transition)
+
+    def sample(self, batch_size):
+        return [random.sample(self.memory, 1)[0] for i in range(batch_size)]
+    
+    def __len__(self):
+        return len(self.memory)
+
+class ExperienceReplayMemory:
     """Interface for replay memories.
 
     We have found this to be a useful interface for the replay

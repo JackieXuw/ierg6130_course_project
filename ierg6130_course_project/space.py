@@ -13,7 +13,8 @@ class DelayConstrainedNetworkObservationSpace(Space):
     r"""The observation space of delay constrained network optimization problem.
     """
     def __init__(self, graph):
-        assert isinstance(graph, nx.Graph) 
+        assert isinstance(graph, nx.DiGraph) 
+        assert len(graph.edges()) > 0 
         self.graph = graph
         super(Space, self).__init__()
 
@@ -25,6 +26,9 @@ class DelayConstrainedNetworkObservationSpace(Space):
         """
         G = self.graph
         current_node, destination = random.sample(G.nodes, 2)
+        while G.out_degree(current_node) == 0:
+            current_node, destination = random.sample(G.nodes, 2)
+
         reachable = nx.has_path(G, current_node, destination)    
         
         if not reachable:

@@ -18,6 +18,7 @@ import os
 import logging
 from copy import deepcopy
 
+
 class GraphFeature(nn.Module):
 
     def __init__(self, config):
@@ -25,26 +26,32 @@ class GraphFeature(nn.Module):
         graph = config['graph']
         dim = config['feature_dim']
         iteration_radius = config['iteration_radius']
-        self.miss_deadline_penalty = config['miss_deadline_penalty'] 
+        params_init_scale = config['params_init_scale'] 
+        self.miss_deadline_penalty = config['miss_deadline_penalty']
+        self.time_radius = config['time_radius']
+        self.cost_radius = config['cost_radius'] 
         assert isinstance(graph, nx.DiGraph)
         self.dim = dim
         self.graph = graph
         self.iteration_radius = iteration_radius
-        self.params_p = torch.Tensor(dim, 6).normal_()
-        self.params_p2 = torch.Tensor(dim, 2, 2).normal_()
-        self.params_pp = torch.Tensor(dim, dim, 2).normal_()
-        self.params_p.requires_grad_()
-        self.params_p2.requires_grad_()
-        self.params_pp.requires_grad_()
-    
-      
+        self.params_p = torch.nn.Parameter(params_init_scale *
+                                           torch.Tensor(dim, 6).normal_(),
+                                           requires_grad=True)
+        self.params_p2 = torch.nn.Parameter(params_init_scale *
+                                            torch.Tensor(dim, 2, 2).normal_(),
+                                            requires_grad=True)
+        self.params_pp = torch.nn.Parameter(params_init_scale *
+                                            torch.Tensor(dim, dim, 2).normal_(),
+                                            requires_grad=True)
+
     def get_fastest_time(self, node, dest):
         G = self.graph 
         has_path_from_node_to_dest = nx.has_path(G, node, dest)
         if has_path_from_node_to_dest:
-            fastest_time = nx.shortest_path_length(G, node, dest, weight='time')
+            fastest_time = nx.shortest_path_length(G, node, dest, weight='time'
+                                                   )
         else:
-            fastest_time = self.miss_deadline_penalty
+            fastest_time = self.time_radius
         return fastest_time
     
     def add_incident_edge_feature(self, node, feature):

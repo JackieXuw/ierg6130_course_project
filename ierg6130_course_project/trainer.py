@@ -14,6 +14,7 @@ from delay_constrained_network_env import *
 from q_value import *
 from utils import *
 
+INFINITY = 1e10
 default_config = dict(
     max_iteration=1000,
     max_episode_length=1000,
@@ -22,6 +23,44 @@ default_config = dict(
     eps=0.3,
     seed=0
 )
+
+def evaluate(policy, env_cls, env_config, num_episodes=1, seed=0,
+             render=False):
+    """This function evaluate the given policy and return the mean episode 
+    reward.
+    :param policy: a function whose input is the observation
+    :param num_episodes: number of episodes you wish to run
+    :param seed: the random seed
+    :param env_cls: the class of the environment
+    :env_config: the configured parameters of the environment
+    :param render: a boolean flag indicating whether to render policy
+    :return: the averaged episode reward of the given policy.
+    """
+    graph = env_config['graph']
+    miss_deadline_penalty = env_config['miss_deadline_penalty']
+    env = env_cls(graph, miss_deadline_penalty)
+    env.seed(seed)
+    rewards = []
+    if render: num_episodes = 1
+    for i in range(num_episodes):
+        obs = env.reset()
+        act = policy(obs)
+        ep_reward = 0
+        while True:
+            if act is None:
+                break
+            obs, reward, done, info = env.step(act)
+            act = policy(obs)
+            ep_reward += reward
+            if render:
+                env.render()
+                wait(sleep=0.05)
+            if done:
+                break
+        rewards.append(ep_reward)
+    if render:
+        env.close()
+    return np.mean(rewards)
 
 class AbstractTrainer:
     """This is the abstract class for value-based RL trainer. We will inherent
@@ -74,13 +113,13 @@ class AbstractTrainer:
         raise NotImplementedError("You need to override the "
                                   "Trainer.compute_action() function.")        
 
-    def evaluate(self, num_episodes=50, *args, **kwargs):
+    def evaluate(self, env_cls, env_config, num_episodes=50, *args, **kwargs):
         """Use the function you write to evaluate current policy.
         Return the mean episode reward of 50 episodes."""
         policy = lambda raw_state: self.compute_action(
             self.process_state(raw_state), eps=0.0)
-        result = evaluate(policy, num_episodes, seed=self.seed,
-                          env_name=self.env_name, *args, **kwargs)
+        result = evaluate(policy, env_cls, env_config, num_episodes, seed=self.seed,
+                          *args, **kwargs)
         return result
 
     def compute_gradient(self, *args, **kwargs):
@@ -128,11 +167,15 @@ class Struct2VecTrainer(AbstractTrainer):
     def __init__(self, config):
         config = merge_config(config, struct2vec_config)
         assert 'graph' in config.keys()
+        self.config = config
         self.learning_rate = config["learning_rate"]
         self.feature_dim = config['feature_dim']
+        self.gamma = config['gamma'] 
         G = config['graph']
         env_class = config['env_class'] 
-        self.env = env_class(G)
+        self.env = env_class(G, miss_deadline_penalty=config['miss_deadline_penalty'])
+        self.config['time_radius'] = self.env.time_radius
+        self.config['cost_radius'] = self.env.cost_radius 
         self.G = G 
         self.QValue = config['q_value_class']
         super().__init__(config)
@@ -144,19 +187,24 @@ class Struct2VecTrainer(AbstractTrainer):
         self.clip_norm = config["clip_norm"]
         self.step_since_update = 0
         self.total_step = 0
+        self.max_episode_length = config['max_episode_length']
 
     def initialize_parameters(self):
         """Initialize the pytorch model as the Q value approximator and the target Q-value approximator."""
-        # initialize the Q-value approximator using QValue class  
-        QValue = self.QValue 
-        self.q_value_approximator = QValue(self.G, struct2vec_config) 
+        # initialize the Q-value approximator using QValue
+        # class
+        QValue = self.QValue
+        self.q_value_approximator = QValue(self.G, self.config) 
         self.q_value_approximator.eval()
         self.q_value_approximator.share_memory()
 
-        # Initialize target approximator, which is identical to self.q_value_approximator,
-        # and should have the same weights with self.q_value_approximator. So you should
-        # put the weights of self.q_value_approximator into self.target_q_value_approximator.
-        self.target_q_value_approximator = QValue(self.G, struct2vec_config)
+        # initialize target approximator, which is identical
+        # to self.q_value_approximator,
+        # and should have the same weights with self.q_value_approximator.
+        # So you should
+        # put the weights of self.q_value_approximator into 
+        # self.target_q_value_approximator.
+        self.target_q_value_approximator = QValue(self.G, self.config)
         self.target_q_value_approximator.load_state_dict(self.q_value_approximator.state_dict())
 
         self.target_q_value_approximator.eval()
@@ -186,11 +234,11 @@ class Struct2VecTrainer(AbstractTrainer):
         if len(action_list) == 0:
             return self.compute_q_value(processed_state, processed_state)
         
-        q_value_list = [self.compute_q_value(processed_state, next_state)
-            for next_state in next_state_list
-        ]
+        q_values = torch.Tensor(
+            [self.compute_q_value(processed_state, next_state)
+                for next_state in next_state_list])
 
-        max_q_value = torch.max(q_value_list)
+        max_q_value = torch.max(q_values)
         
         return max_q_value
 
@@ -227,12 +275,13 @@ class Struct2VecTrainer(AbstractTrainer):
 
         for t in range(self.max_episode_length):
             if act is None:
-                continue
+                break 
             next_state, reward, done, _ = self.env.step(act)
             next_processed_s = self.process_state(next_state)
 
             # Push the transition into memory.
-            self.memory.push(
+            if act is not None: 
+                self.memory.push(
                 (processed_s, act, reward, next_processed_s, done)
             )
 
@@ -241,10 +290,8 @@ class Struct2VecTrainer(AbstractTrainer):
             self.step_since_update += 1
             self.total_step += 1
 
-            if done:
-                break
-                
-            if t % self.config["learn_freq"] != 0:
+               
+            if t % self.config["learn_freq"] != 0 and act is not None:
                 # It's not necessary to update in each step.
                 continue
 
@@ -256,22 +303,14 @@ class Struct2VecTrainer(AbstractTrainer):
 
             batch = self.memory.sample(self.batch_size)
 
-            # Transform a batch of state / action / .. into a tensor.
-            state_batch = to_tensor(
-                np.stack([transition[0] for transition in batch])
-            )
-            action_batch = to_tensor(
-                np.stack([transition[1] for transition in batch])
-            )
-            reward_batch = to_tensor(
-                np.stack([transition[2] for transition in batch])
-            )
-            next_state_batch = torch.stack(
-                [transition[3] for transition in batch]
-            )
-            done_batch = to_tensor(
-                np.stack([transition[4] for transition in batch])
-            )
+            # take out the state batch, action_batch, reward_batch,
+            # next_state_batch and done_batch
+            state_batch = [transition[0] for transition in batch]
+            action_batch = [transition[1] for transition in batch]
+            reward_batch = torch.Tensor([transition[2] for transition in batch]
+                                        )
+            next_state_batch = [transition[3] for transition in batch]
+            done_batch = torch.Tensor([transition[4] for transition in batch])
 
             with torch.no_grad():
                 # Compute the values of Q in next state in batch.
@@ -279,8 +318,10 @@ class Struct2VecTrainer(AbstractTrainer):
                 #     actions in next state. So the input to the network is 
                 #     next_state_batch.
                 #  2. Q_t_plus_one is computed using the target network.
-                Q_t_plus_one = self.get_maximum_q_value(next_state_batch)
-                                
+                Q_t_plus_one = torch.Tensor([
+                    self.get_maximum_q_value(next_state).item() for
+                    next_state in next_state_batch])
+                Q_t_plus_one = Q_t_plus_one.squeeze()
                 assert isinstance(Q_t_plus_one, torch.Tensor)
                 assert Q_t_plus_one.dim() == 1
                 
@@ -290,7 +331,8 @@ class Struct2VecTrainer(AbstractTrainer):
                 #  That is, the (gamma*Q_t+1) term should be masked out
                 #  if done_batch[t] is True.
                 #  A smart way to do so is: using (1-done_batch) as multiplier
-                Q_target = reward_batch + (1-done_batch) * self.gamma * Q_t_plus_one 
+                Q_target = reward_batch + (1-done_batch) * self.gamma * \
+                    Q_t_plus_one
                 Q_target = Q_target.squeeze()
                 
                 assert Q_target.shape == (self.batch_size,)
@@ -299,10 +341,11 @@ class Struct2VecTrainer(AbstractTrainer):
             #  before you get the Q value from self.network(state_batch),
             #  otherwise the graident will not be recorded by pytorch.
             self.q_value_approximator.train()
-            Q_t = torch.autograd.Variable(torch.ones(self.batch_size), requires_grad=False)
+            Q_t = torch.autograd.Variable(torch.ones(self.batch_size),
+                                          requires_grad=False)
             for i in range(self.batch_size):
-                state = (state_batch[0, i])
-                next_state = (next_state_batch[0, i])
+                state = state_batch[i]
+                next_state = next_state_batch[i]
                 Q_t[i] = self.q_value_approximator(state, next_state) 
     
             assert Q_t.shape == Q_target.shape
@@ -321,6 +364,11 @@ class Struct2VecTrainer(AbstractTrainer):
             
             self.optimizer.step()
             self.q_value_approximator.eval()
+            
+            # check if the environment is done 
+            if done:
+                break
+        
 
         if len(self.memory) >= self.learn_start and \
                 self.step_since_update > self.target_update_freq:
@@ -337,7 +385,8 @@ class Struct2VecTrainer(AbstractTrainer):
 
             self.target_q_value_approximator.eval()
 
-        return {"loss": np.mean(stat["loss"]), "episode_len": t}
+           
+        return {"loss": np.mean(stat["loss"]) if stat["loss"] else -INFINITY, "episode_len": t}
 
     def process_state(self, state):
         return state

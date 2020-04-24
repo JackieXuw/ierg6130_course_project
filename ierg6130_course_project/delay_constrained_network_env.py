@@ -36,14 +36,16 @@ from six import StringIO
 class DelayConstrainedNetworkRoutingEnv(Env):
 
     metadata = {}
-    
-    def __init__(self, graph, miss_deadline_penalty=500):
+
+    def __init__(self, graph, miss_deadline_penalty=1):
         """
         G: a networkx direct Graph, each edge is associated with a cost and a time.
         miss_deadline_penalty: the penalty incurred if the deadline is violated. 
         """
-        assert isinstance(graph, nx.Graph)
+        assert isinstance(graph, nx.DiGraph)
+        assert len(graph.edges()) > 0
         self.graph = deepcopy(graph)
+        self.set_cost_time_radius() 
         self.miss_deadline_penalty = miss_deadline_penalty
         self.current_node = None
         self.destination = None
@@ -63,6 +65,28 @@ class DelayConstrainedNetworkRoutingEnv(Env):
         self.observation_space = DelayConstrainedNetworkObservationSpace(self.graph)  
         self.seed()
         self.reset()
+    
+    def set_cost_time_radius(self):
+        graph = self.graph
+        max_cost_path_cost = 0 
+        max_time_path_time = 0 
+        node2node_min_costs = nx.shortest_path_length(graph, weight='cost')
+        node2node_min_times = nx.shortest_path_length(graph, weight='time')
+        for u2node_min_costs in node2node_min_costs:
+            u = u2node_min_costs[0]
+            for v in u2node_min_costs[1].keys():
+                max_cost_path_cost = max(max_cost_path_cost, u2node_min_costs[1][v])
+        
+        for u2node_min_times in node2node_min_times:
+            u = u2node_min_times[0]
+            for v in u2node_min_times[1].keys():
+                max_time_path_time = max(max_time_path_time, u2node_min_times[1][v])
+
+        assert max_cost_path_cost > 0
+        assert max_time_path_time > 0
+        self.cost_radius = max_cost_path_cost
+        self.time_radius = max_time_path_time
+        return max_cost_path_cost, max_time_path_time
 
     def find_next_action_states(self, state):
         current_node, destination, remaining_time = state
@@ -124,19 +148,47 @@ class DelayConstrainedNetworkRoutingEnv(Env):
             miss_ddl = (remaining_time < 0)
 
             if miss_ddl:
-                reward += (-self.miss_deadline_penalty)
+                time_penalty = self.time_radius
+                cost_penalty = self.cost_radius
+                if nx.has_path(self.graph, current_node, destination):
+                    time_penalty = nx.shortest_path_length(self.graph,
+                                                           source=current_node,
+                                                           target=destination,
+                                                           weight='time'
+                                                           )
+                    cost_penalty = nx.shortest_path_length(self.graph,
+                                                           source=current_node,
+                                                           target=destination,
+                                                           weight='cost'
+                                                           )
+                reward += (- time_penalty * self.miss_deadline_penalty
+                           - cost_penalty
+                           )
             
             if miss_ddl or arrive:
                 done = True
             current_node = next_node
 
         self.last_action = action
-        self.last_reward = reward 
+        self.last_reward = reward
         self.episode_total_reward += reward
         
         # update the current state
         self.current_node = current_node
         self.remaining_time = remaining_time
+
+        # if we are stuck in some node, then we are done 
+        next_action_space = self.get_action_space(current_node) 
+        if next_action_space.sample() is None:
+            if done is False: 
+                done = True
+                # if we get stuck, then are doomed to be late
+                time_penalty = self.time_radius
+                cost_penalty = self.cost_radius
+                reward += (- time_penalty * self.miss_deadline_penalty
+                           - cost_penalty
+                           )
+
         return (obs, reward, done, {})
 
     def reset(self, init_state=None):

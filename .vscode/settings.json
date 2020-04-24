@@ -1,3 +1,5 @@
 {
-    "python.pythonPath": "C:\\Users\\ThinkPad\\Anaconda3\\python.exe"
+    "python.pythonPath": "C:\\Users\\ThinkPad\\Anaconda3\\envs\\ierg6130\\python.exe",
+    "python.linting.pycodestyleEnabled": true,
+    "python.linting.enabled": true
 }

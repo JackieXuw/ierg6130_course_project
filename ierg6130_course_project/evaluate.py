@@ -17,6 +17,8 @@ def evaluate(policy, env, num_episodes=1, seed=0, render=False):
         act = policy(obs)
         ep_reward = 0
         while True:
+            if act is None:
+                break
             obs, reward, done, info = env.step(act)
             act = policy(obs)
             ep_reward += reward

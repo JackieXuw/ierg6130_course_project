@@ -10,12 +10,15 @@ class GraphFeatureQValue(nn.Module):
         assert isinstance(graph, nx.Graph)
         dim = config['feature_dim']
         iter_radius = config['iteration_radius']
+        params_init_scale = config['params_init_scale'] 
         self.dim = dim
-        self.params_p2 = torch.Tensor(2 * dim).normal_()
-        self.params_pp = torch.Tensor(dim, dim, 2).normal_()
-        self.params_p2.requires_grad_()
-        self.params_pp.requires_grad_()
-        self.graph_feature = GraphFeature(config) 
+        self.params_p2 = torch.nn.Parameter(params_init_scale *
+                                            torch.Tensor(2 * dim).normal_(),
+                                            requires_grad=True)
+        self.params_pp = torch.nn.Parameter(params_init_scale *
+                                            torch.Tensor(dim, dim, 2).normal_(),
+                                            requires_grad=True)
+        self.graph_feature = GraphFeature(config)
 
     def forward(self, state, action):
         """
