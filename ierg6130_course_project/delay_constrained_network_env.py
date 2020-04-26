@@ -68,24 +68,39 @@ class DelayConstrainedNetworkRoutingEnv(Env):
     
     def set_cost_time_radius(self):
         graph = self.graph
+        node2node_cost = dict()
+        node2node_time = dict()
+        node2node_fast_path_cost = dict() 
         max_cost_path_cost = 0 
         max_time_path_time = 0 
         node2node_min_costs = nx.shortest_path_length(graph, weight='cost')
         node2node_min_times = nx.shortest_path_length(graph, weight='time')
+        node2node_min_time_paths = nx.shortest_path(graph, weight='time')
         for u2node_min_costs in node2node_min_costs:
             u = u2node_min_costs[0]
             for v in u2node_min_costs[1].keys():
+                node2node_cost[(u,v)] = u2node_min_costs[1][v]
                 max_cost_path_cost = max(max_cost_path_cost, u2node_min_costs[1][v])
         
         for u2node_min_times in node2node_min_times:
             u = u2node_min_times[0]
             for v in u2node_min_times[1].keys():
+                node2node_time[(u,v)] = u2node_min_times[1][v]
                 max_time_path_time = max(max_time_path_time, u2node_min_times[1][v])
-
+                path_len = len(node2node_min_time_paths[u][v])
+                cost_sum = 0
+                for i in range(path_len-1):
+                    s = node2node_min_time_paths[u][v][i]
+                    d = node2node_min_time_paths[u][v][i+1]
+                    cost_sum += graph[s][d]['cost']
+                node2node_fast_path_cost[(u,v)] = cost_sum
         assert max_cost_path_cost > 0
         assert max_time_path_time > 0
         self.cost_radius = max_cost_path_cost
         self.time_radius = max_time_path_time
+        self.node2node_cost = node2node_cost
+        self.node2node_time = node2node_time
+        self.node2node_fast_path_cost = node2node_fast_path_cost
         return max_cost_path_cost, max_time_path_time
 
     def find_next_action_states(self, state):

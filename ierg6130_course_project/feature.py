@@ -30,6 +30,9 @@ class GraphFeature(nn.Module):
         self.miss_deadline_penalty = config['miss_deadline_penalty']
         self.time_radius = config['time_radius']
         self.cost_radius = config['cost_radius'] 
+        if 'node2node_time' and 'node2node_cost' in config.keys():
+            self.node2node_time = config['node2node_time']
+            self.node2node_cost = config['node2node_cost'] 
         assert isinstance(graph, nx.DiGraph)
         self.dim = dim
         self.graph = graph
@@ -44,8 +47,15 @@ class GraphFeature(nn.Module):
                                             torch.Tensor(dim, dim, 2).normal_(),
                                             requires_grad=True)
 
+
     def get_fastest_time(self, node, dest):
+        try:
+            fastest_time = self.node2node_time[(node, dest)]
+            return fastest_time
+        except Exception as e:
+            pass
         G = self.graph 
+        #import pdb; pdb.set_trace()
         has_path_from_node_to_dest = nx.has_path(G, node, dest)
         if has_path_from_node_to_dest:
             fastest_time = nx.shortest_path_length(G, node, dest, weight='time'
@@ -109,7 +119,7 @@ class GraphFeature(nn.Module):
             features_different_slot_list.append(current_states_feature_dict)
             outgoing_states = set()
             for current_state in current_states:
-                v, t_r, d = current_state
+                v, d, t_r = current_state
                 new_states = {(edge[1], d, t_r - G[edge[0]][edge[1]]['time']) \
                     for edge in G.out_edges(v)}
                 states_to_new_states[current_state] = deepcopy(new_states) 

@@ -42,6 +42,7 @@ struct2vec_config = merge_config(dict(
     target_update_freq=5,  # in steps
     learn_freq=1,  # in steps
     clip_norm=1e-1, 
+    params_init_scale=1e-1,
     n=1,
     env_class=DelayConstrainedNetworkRoutingEnv,
     env_name="DelayConstrainedNetworkRoutingEnv",
@@ -78,6 +79,15 @@ class TestStruct2VecTrainer(unittest.TestCase):
         state = (0, 3, 2.5)
         act = struct2vec_trainer.compute_action(state)
         self.assertIn(act, [(0, 1), (0, 2)])
+    
+    def test_compute_baseline_action(self):
+        struct2vec_trainer = Struct2VecTrainer(struct2vec_config)
+        state = (0, 3, 2.5)
+        act = struct2vec_trainer.compute_fastest_action(state)
+        self.assertEqual(act, (0, 1))
+        state = (3, 0, 2.5)
+        act = struct2vec_trainer.compute_fastest_action(state)
+        self.assertIsNone(act)
 
     def test_train(self):
         struc2vec_trainer = Struct2VecTrainer(struct2vec_config)

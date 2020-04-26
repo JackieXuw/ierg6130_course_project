@@ -9,6 +9,8 @@ import torch.nn as nn
 import inspect 
 import random
 import time
+import networkx as nx
+from copy import deepcopy
 from replay_memory import *
 from delay_constrained_network_env import *
 from q_value import *
@@ -113,14 +115,30 @@ class AbstractTrainer:
         raise NotImplementedError("You need to override the "
                                   "Trainer.compute_action() function.")        
 
+    def compute_baseline_action(self, processed_state, eps=None):
+        """Compute the baseline action given the state. Note that the input
+        is the processed state."""
+
+        raise NotImplementedError("You need to override the "
+                                  "Trainer.compute_action() function.")        
+
+
     def evaluate(self, env_cls, env_config, num_episodes=50, *args, **kwargs):
         """Use the function you write to evaluate current policy.
         Return the mean episode reward of 50 episodes."""
         policy = lambda raw_state: self.compute_action(
             self.process_state(raw_state), eps=0.0)
-        result = evaluate(policy, env_cls, env_config, num_episodes, seed=self.seed,
-                          *args, **kwargs)
-        return result
+        result = evaluate(policy, env_cls, env_config, num_episodes, 
+                          seed=self.seed, *args, **kwargs)
+
+        baseline_policy = lambda raw_state: self.compute_action(
+                        self.process_state(raw_state), eps=1.0)
+        baseline_result = evaluate(baseline_policy, env_cls, env_config, 
+                                   num_episodes, seed=self.seed,
+                                   *args, **kwargs)
+
+
+        return result, baseline_result
 
     def compute_gradient(self, *args, **kwargs):
         """Compute the gradient."""
@@ -176,6 +194,9 @@ class Struct2VecTrainer(AbstractTrainer):
         self.env = env_class(G, miss_deadline_penalty=config['miss_deadline_penalty'])
         self.config['time_radius'] = self.env.time_radius
         self.config['cost_radius'] = self.env.cost_radius 
+        self.config['node2node_cost'] = self.env.node2node_cost
+        self.config['node2node_time'] = self.env.node2node_time 
+        self.config['node2node_fast_path_cost'] = self.env.node2node_fast_path_cost  
         self.G = G 
         self.QValue = config['q_value_class']
         super().__init__(config)
@@ -247,8 +268,22 @@ class Struct2VecTrainer(AbstractTrainer):
             processed_state
         )
         assert action_list is not None
+        feasible_action_list = []
+        feasible_next_state_list =[]
+        for i in range(len(action_list)):
+            next_node, destination, next_node_remaining_time = next_state_list[i]
+            if (next_node, destination) not in self.config['node2node_time'].keys():
+                continue
+            if self.config['node2node_time'][(next_node, destination)] > next_node_remaining_time:
+                continue
+            feasible_action_list.append(action_list[i])
+            feasible_next_state_list.append(next_state_list[i])
+        #import pdb; pdb.set_trace() 
+        action_list = deepcopy(feasible_action_list)
+        next_state_list = deepcopy(feasible_next_state_list)
         if len(action_list) == 0:
             return None
+        #import pdb; pdb.set_trace()
         q_value_list = [self.compute_q_value(processed_state, next_state)
                         for next_state in next_state_list]
 
@@ -266,8 +301,20 @@ class Struct2VecTrainer(AbstractTrainer):
             action_id = np.argmax(q_value_list)
             action = action_list[action_id]
         return action
+    
+    def compute_baseline_action(self, processed_state, eps=None):
+        current_node, destination, remaining_time = processed_state
+        has_path = nx.has_path(self.G, current_node, destination)
+        if not has_path:
+            return None
+        fastest_path = nx.shortest_path(self.G, source=current_node,
+                                        target=destination)
+        if len(fastest_path) == 1:
+            return None 
+        action = (fastest_path[0], fastest_path[1])
+        return action
 
-    def train(self):
+    def train(self, use_fastest_supervisor=False):
         s = self.env.reset()
         processed_s = self.process_state(s)
         act = self.compute_action(processed_s)
@@ -290,7 +337,11 @@ class Struct2VecTrainer(AbstractTrainer):
             self.step_since_update += 1
             self.total_step += 1
 
-               
+            # check if the environment is done 
+            if done:
+                break
+
+            #import pdb; pdb.set_trace()
             if t % self.config["learn_freq"] != 0 and act is not None:
                 # It's not necessary to update in each step.
                 continue
@@ -337,6 +388,13 @@ class Struct2VecTrainer(AbstractTrainer):
                 
                 assert Q_target.shape == (self.batch_size,)
             
+            if use_fastest_supervisor:
+                for i in range(len(Q_target)):
+                    state = state_batch[i]
+                    current_node, destination, _ = state
+                    if nx.has_path(self.G, current_node, destination):
+                        Q_target[i] = self.config['node2node_fast_path_cost'][(current_node, destination)]
+            
             # Collect the Q values in batch.
             #  before you get the Q value from self.network(state_batch),
             #  otherwise the graident will not be recorded by pytorch.
@@ -365,10 +423,7 @@ class Struct2VecTrainer(AbstractTrainer):
             self.optimizer.step()
             self.q_value_approximator.eval()
             
-            # check if the environment is done 
-            if done:
-                break
-        
+                    
 
         if len(self.memory) >= self.learn_start and \
                 self.step_since_update > self.target_update_freq:

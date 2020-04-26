@@ -26,14 +26,10 @@ class DelayConstrainedNetworkObservationSpace(Space):
         """
         G = self.graph
         current_node, destination = random.sample(G.nodes, 2)
-        while G.out_degree(current_node) == 0:
-            current_node, destination = random.sample(G.nodes, 2)
-
         reachable = nx.has_path(G, current_node, destination)    
-        
-        if not reachable:
-            # if destination is not reachable, then set remaining_time to 0 
-            return (current_node, destination, 0) 
+        while G.out_degree(current_node) == 0 or not reachable or current_node == destination:
+            current_node, destination = random.sample(G.nodes, 2)
+            reachable = nx.has_path(G, current_node, destination)    
         
         fastest_path_time = nx.shortest_path_length(G=G, source=current_node, target=destination, weight=time_weight)
         coin = np.random.rand() 
