@@ -393,7 +393,7 @@ class Struct2VecTrainer(AbstractTrainer):
                     state = state_batch[i]
                     current_node, destination, _ = state
                     if nx.has_path(self.G, current_node, destination):
-                        Q_target[i] = self.config['node2node_fast_path_cost'][(current_node, destination)]
+                        Q_target[i] = - self.config['node2node_fast_path_cost'][(current_node, destination)]
             
             # Collect the Q values in batch.
             #  before you get the Q value from self.network(state_batch),
