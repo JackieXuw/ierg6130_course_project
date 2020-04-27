@@ -24,7 +24,7 @@ G = G_medium_size
 G_name = 'G_medium_size'
 config = dict(
     graph=G,
-    iteration_radius=3,
+    iteration_radius=1,
     miss_deadline_penalty=1 
 )
 
@@ -32,21 +32,21 @@ default_config = dict(
     max_iteration=5000,
     max_episode_length=50,
     evaluate_interval=1,
-    learning_rate=1e-3,
+    learning_rate=5e-3,
     gamma=0.99,
     eps=0.3,
-    params_init_scale=1e-3,
+    params_init_scale=1,
     seed=0
 )
 
 struct2vec_config = merge_config(dict(
     memory_size=500,
     learn_start=1,
-    batch_size=100,
+    batch_size=30,
     feature_dim=5,
     target_update_freq=200,  # in steps
-    learn_freq=50,  # in steps
-    clip_norm=1, 
+    learn_freq=100,  # in steps
+    clip_norm=10, 
     n=1,
     env_class=DelayConstrainedNetworkRoutingEnv,
     env_name="DelayConstrainedNetworkRoutingEnv",
@@ -78,7 +78,7 @@ def run(trainer_cls, config=None, reward_threshold=None):
         stats.append(stat or {})
         if i % config['evaluate_interval'] == 0 or \
                 i == config["max_iteration"]:
-            reward, fastest_path_reward = trainer.evaluate(config['env_class'], config, config.get("evaluate_num_episodes", 200))
+            reward, fastest_path_reward = trainer.evaluate(config['env_class'], config, config.get("evaluate_num_episodes", 50))
             print("({:.1f}s,+{:.1f}s)\tIteration {}, current mean episode "
                   "reward is {}, current baseline mean episode reward is {}. {}".format(
                 time.time() - start, time.time() - now, i, reward, fastest_path_reward,

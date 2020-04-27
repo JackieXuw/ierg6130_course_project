@@ -131,7 +131,7 @@ class AbstractTrainer:
         result = evaluate(policy, env_cls, env_config, num_episodes, 
                           seed=self.seed, *args, **kwargs)
 
-        baseline_policy = lambda raw_state: self.compute_action(
+        baseline_policy = lambda raw_state: self.compute_random_feasible_action(
                         self.process_state(raw_state), eps=1.0)
         baseline_result = evaluate(baseline_policy, env_cls, env_config, 
                                    num_episodes, seed=self.seed,
@@ -234,6 +234,9 @@ class Struct2VecTrainer(AbstractTrainer):
         self.optimizer = torch.optim.Adam(
             self.q_value_approximator.parameters(), lr=self.learning_rate
         )
+        self.feature_optimizer = torch.optim.Adam(
+            self.q_value_approximator.graph_feature.parameters(), lr=self.learning_rate
+        )
         self.loss = nn.MSELoss()
 
     def compute_q_value(self, processed_state, processed_action):
@@ -262,7 +265,7 @@ class Struct2VecTrainer(AbstractTrainer):
         max_q_value = torch.max(q_values)
         
         return max_q_value
-
+    
     def compute_action(self, processed_state, eps=None):
         action_list, next_state_list = self.env.find_next_action_states(
             processed_state
@@ -302,6 +305,30 @@ class Struct2VecTrainer(AbstractTrainer):
             action = action_list[action_id]
         return action
     
+    def compute_random_feasible_action(self, processed_state, eps=None):
+        action_list, next_state_list = self.env.find_next_action_states(
+            processed_state
+        )
+        assert action_list is not None
+        feasible_action_list = []
+        feasible_next_state_list =[]
+        for i in range(len(action_list)):
+            next_node, destination, next_node_remaining_time = next_state_list[i]
+            if (next_node, destination) not in self.config['node2node_time'].keys():
+                continue
+            if self.config['node2node_time'][(next_node, destination)] > next_node_remaining_time:
+                continue
+            feasible_action_list.append(action_list[i])
+            feasible_next_state_list.append(next_state_list[i])
+        #import pdb; pdb.set_trace() 
+        action_list = deepcopy(feasible_action_list)
+        next_state_list = deepcopy(feasible_next_state_list)
+        if len(action_list) == 0:
+            return None
+    
+        action = random.sample(action_list, 1)[0] 
+        return action
+
     def compute_baseline_action(self, processed_state, eps=None):
         current_node, destination, remaining_time = processed_state
         has_path = nx.has_path(self.G, current_node, destination)
@@ -397,7 +424,9 @@ class Struct2VecTrainer(AbstractTrainer):
                     if nx.has_path(self.G, next_node, destination):
                         Q_target[i] = - self.config['node2node_fast_path_cost'][(next_node, destination)]\
                                       - self.G[current_node][next_node]['cost'] 
-            
+                
+                #Q_target = (Q_target - Q_target.mean())/max(1e-6, Q_target.std())
+             
             # Collect the Q values in batch.
             #  before you get the Q value from self.network(state_batch),
             #  otherwise the graident will not be recorded by pytorch.
@@ -413,6 +442,7 @@ class Struct2VecTrainer(AbstractTrainer):
 
             # Update the q_value approximator
             self.optimizer.zero_grad()
+            self.feature_optimizer.zero_grad()
             loss = self.loss(input=Q_t, target=Q_target)
             loss_value = loss.item()
             stat['loss'].append(loss_value)
@@ -422,10 +452,14 @@ class Struct2VecTrainer(AbstractTrainer):
             nn.utils.clip_grad_norm_(
                 self.q_value_approximator.parameters(), self.clip_norm
                 )
+            nn.utils.clip_grad_norm_(
+                self.q_value_approximator.graph_feature.parameters(), self.clip_norm
+                )
             
+            self.feature_optimizer.step()
             self.optimizer.step()
             self.q_value_approximator.eval()
-            
+            self.q_value_approximator.graph_feature.eval() 
                     
 
         if len(self.memory) >= self.learn_start and \

@@ -29,4 +29,4 @@ class GraphFeatureQValue(nn.Module):
         inp = torch.cat((torch.matmul(self.params_pp[:,:, 0], state_feature.unsqueeze(1)), torch.matmul(self.params_pp[:,:, 1], \
                         action_feature.unsqueeze(1))), dim=0)
 
-        return torch.matmul(self.params_p2, F.relu(inp))
+        return torch.matmul(self.params_p2, F.tanh(inp))

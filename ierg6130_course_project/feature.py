@@ -77,8 +77,8 @@ class GraphFeature(nn.Module):
                              }
         
         for u, adj in G.out_edges(node):
-            adj_cost_feature += F.relu(self.params_p[:, 2] * G[node][adj]['cost'])
-            adj_time_feature += F.relu(self.params_p[:, 3] * G[node][adj]['time']) 
+            adj_cost_feature += F.tanh(self.params_p[:, 2] * G[node][adj]['cost'])
+            adj_time_feature += F.tanh(self.params_p[:, 3] * G[node][adj]['time']) 
             if G[node][adj]['cost'] < adj_min_cost_edge['cost']:
                 adj_min_cost_edge['cost'] = G[node][adj]['cost']
                 adj_min_cost_edge['time'] = G[node][adj]['time']

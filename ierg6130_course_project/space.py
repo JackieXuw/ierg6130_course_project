@@ -30,7 +30,9 @@ class DelayConstrainedNetworkObservationSpace(Space):
         while G.out_degree(current_node) == 0 or not reachable or current_node == destination:
             current_node, destination = random.sample(G.nodes, 2)
             reachable = nx.has_path(G, current_node, destination)    
-        
+
+        current_node = 54455
+        destination = 69095 
         fastest_path_time = nx.shortest_path_length(G=G, source=current_node, target=destination, weight=time_weight)
         coin = np.random.rand() 
         delay_ratio = delay_ratio_lw + coin * (delay_ratio_up - delay_ratio_lw)
