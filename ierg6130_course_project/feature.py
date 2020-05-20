@@ -33,6 +33,9 @@ class GraphFeature(nn.Module):
         if 'node2node_time' and 'node2node_cost' in config.keys():
             self.node2node_time = config['node2node_time']
             self.node2node_cost = config['node2node_cost'] 
+        if 'node2node_fast_path_cost' in config.keys():
+            self.node2node_fast_path_cost = config['node2node_fast_path_cost']
+
         assert isinstance(graph, nx.DiGraph)
         self.dim = dim
         self.graph = graph
@@ -51,18 +54,26 @@ class GraphFeature(nn.Module):
     def get_fastest_time(self, node, dest):
         try:
             fastest_time = self.node2node_time[(node, dest)]
-            return fastest_time
+            fast_path_cost = self.node2node_fast_path_cost[(node, dest)] 
+            return fastest_time, fast_path_cost
         except Exception as e:
             pass
         G = self.graph 
-        #import pdb; pdb.set_trace()
         has_path_from_node_to_dest = nx.has_path(G, node, dest)
         if has_path_from_node_to_dest:
             fastest_time = nx.shortest_path_length(G, node, dest, weight='time'
-                                                   )
+                                                   )    
+            fast_path = nx.shortest_path(G, node, dest, weight='time')
+            fast_path_cost = 0
+            for i in range(len(fast_path)-1):
+                u = fast_path[i]
+                v = fast_path[i+1]
+                fast_path_cost += G[u][v]['cost']
         else:
             fastest_time = self.time_radius
-        return fastest_time
+            fast_path_cost = self.cost_radius
+        return fastest_time, fast_path_cost 
+
     
     def add_incident_edge_feature(self, node, feature):
         G = self.graph 
@@ -108,6 +119,7 @@ class GraphFeature(nn.Module):
         radius = self.iteration_radius 
         G = self.graph 
 
+        
         # collect the nodes that are within radius-hops of node 
         features_different_slot_list = []
         current_states = {state}
@@ -135,7 +147,7 @@ class GraphFeature(nn.Module):
                 u = int(u)
                 d = int(d)
                 # add time feature
-                fastest_time = self.get_fastest_time(u, d) 
+                fastest_time, fast_path_cost = self.get_fastest_time(u, d) 
                 feature = self.params_p[:, 4] * fastest_time
                 feature += self.params_p[:, 5] * t_r 
 

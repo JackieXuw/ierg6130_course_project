@@ -13,8 +13,6 @@ G_toy.add_edge(1, 3, cost=1.0, time=1.0)
 G_toy.add_edge(2, 3, cost=1.0, time=1.0) 
 node_list = list(G_toy.nodes) 
 
-#HOME_PATH = '/c/Users/ThinkPad/Desktop/IERG6130/ierg6130_course_project/'\
-#            + 'ierg6130_course_project/'
 G_medium_size = nx.read_gml('data/G_medium_size.gml',
                             destringizer=eval
                             )
@@ -29,23 +27,23 @@ config = dict(
 )
 
 default_config = dict(
-    max_iteration=5000,
+    max_iteration=200,
     max_episode_length=50,
     evaluate_interval=1,
-    learning_rate=5e-3,
-    gamma=0.99,
-    eps=0.3,
-    params_init_scale=1,
+    learning_rate=5e-2,
+    gamma=0.9,
+    eps=0.5,
+    params_init_scale=1e-2,
     seed=0
 )
 
 struct2vec_config = merge_config(dict(
     memory_size=500,
     learn_start=1,
-    batch_size=30,
-    feature_dim=5,
+    batch_size=40,
+    feature_dim=6,
     target_update_freq=200,  # in steps
-    learn_freq=100,  # in steps
+    learn_freq=10,  # in steps
     clip_norm=10, 
     n=1,
     env_class=DelayConstrainedNetworkRoutingEnv,
@@ -72,9 +70,11 @@ def run(trainer_cls, config=None, reward_threshold=None):
     config = trainer.config
     start = now = time.time()
     stats = []
-    rewards = [] 
+    rewards = []
+    use_fastest_supervisor = True
+    use_fastest_supervisor_threshold = -35 
     for i in range(config['max_iteration'] + 1):
-        stat = trainer.train(use_fastest_supervisor=True)
+        stat = trainer.train(use_fastest_supervisor=use_fastest_supervisor)
         stats.append(stat or {})
         if i % config['evaluate_interval'] == 0 or \
                 i == config["max_iteration"]:
@@ -86,6 +86,10 @@ def run(trainer_cls, config=None, reward_threshold=None):
                  stat.items()} if stat else ""))
             rewards.append([i, reward, fastest_path_reward]) 
             now = time.time()
+            if reward > use_fastest_supervisor_threshold:
+                use_fastest_supervisor = False
+            else:
+                use_fastest_supervisor = True
         if reward_threshold is not None and reward > reward_threshold:
             print("In {} iteration, current mean episode reward {:.3f} is "
                   "greater than reward threshold {}. Congratulation! Now we "
@@ -97,4 +101,4 @@ def run(trainer_cls, config=None, reward_threshold=None):
 
 if __name__ == '__main__':
     trainer, stats, rewards = run(trainer_cls, struct2vec_config)
-    np.save(time.asctime+'_stats_rewards_'+G_name, [stats, rewards])
+    np.save(time.asctime()+'_stats_rewards_'+G_name, [stats, rewards])

@@ -242,7 +242,7 @@ class Struct2VecTrainer(AbstractTrainer):
     def compute_q_value(self, processed_state, processed_action):
         """Compute the q value for each state action pair. Note that you
         should NOT preprocess the state and action here."""
-        values = self.target_q_value_approximator(
+        values = self.q_value_approximator(
             processed_state, processed_action).detach().numpy()
 
         return values
@@ -344,7 +344,7 @@ class Struct2VecTrainer(AbstractTrainer):
     def train(self, use_fastest_supervisor=False):
         s = self.env.reset()
         processed_s = self.process_state(s)
-        act = self.compute_action(processed_s)
+        act = self.compute_random_feasible_action(processed_s)
         stat = {"loss": []}
 
         for t in range(self.max_episode_length):
@@ -414,7 +414,8 @@ class Struct2VecTrainer(AbstractTrainer):
                 Q_target = Q_target.squeeze()
                 
                 assert Q_target.shape == (self.batch_size,)
-            
+
+            # if we use fastest path as supervisor  
             if use_fastest_supervisor:
                 for i in range(len(Q_target)):
                     state = state_batch[i]
@@ -425,7 +426,7 @@ class Struct2VecTrainer(AbstractTrainer):
                         Q_target[i] = - self.config['node2node_fast_path_cost'][(next_node, destination)]\
                                       - self.G[current_node][next_node]['cost'] 
                 
-                #Q_target = (Q_target - Q_target.mean())/max(1e-6, Q_target.std())
+                #Q_target = (Q_target - Q_target.mean())
              
             # Collect the Q values in batch.
             #  before you get the Q value from self.network(state_batch),
@@ -442,7 +443,7 @@ class Struct2VecTrainer(AbstractTrainer):
 
             # Update the q_value approximator
             self.optimizer.zero_grad()
-            self.feature_optimizer.zero_grad()
+            #self.feature_optimizer.zero_grad()
             loss = self.loss(input=Q_t, target=Q_target)
             loss_value = loss.item()
             stat['loss'].append(loss_value)
@@ -452,9 +453,9 @@ class Struct2VecTrainer(AbstractTrainer):
             nn.utils.clip_grad_norm_(
                 self.q_value_approximator.parameters(), self.clip_norm
                 )
-            nn.utils.clip_grad_norm_(
-                self.q_value_approximator.graph_feature.parameters(), self.clip_norm
-                )
+            # nn.utils.clip_grad_norm_(
+            #     self.q_value_approximator.graph_feature.parameters(), self.clip_norm
+            #     )
             
             self.feature_optimizer.step()
             self.optimizer.step()
